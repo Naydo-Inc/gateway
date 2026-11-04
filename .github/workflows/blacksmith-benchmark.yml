@@ -1,0 +1,91 @@
+name: Blacksmith benchmark
+
+# Runs the same Node.js install + build + test on GitHub's runner and
+# Blacksmith's runner, once with no cache ("cold") and once with a cache ("warm").
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: ${{ matrix.runner }} / ${{ matrix.cache }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, blacksmith-4vcpu-ubuntu-2404]
+        cache: [cold, warm]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Record start time
+        run: echo "BENCH_START=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Get pnpm store directory
+        id: pnpm-store
+        run: echo "STORE_PATH=$(pnpm store path)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore cache (warm only)
+        if: matrix.cache == 'warm'
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.STORE_PATH }}
+          key: ${{ matrix.runner }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: ${{ matrix.runner }}-pnpm-
+
+      - name: Install dependencies
+        run: |
+          s=$(date +%s)
+          pnpm install --no-frozen-lockfile
+          echo "INSTALL_SECS=$(( $(date +%s) - s ))" >> "$GITHUB_ENV"
+
+      - name: Build (TypeScript compile)
+        run: |
+          s=$(date +%s)
+          pnpm build
+          echo "BUILD_SECS=$(( $(date +%s) - s ))" >> "$GITHUB_ENV"
+
+      - name: Run tests
+        # Keep going if a test fails, so timings are still recorded for both runners
+        continue-on-error: true
+        run: |
+          mkdir -p conf/
+          cp -rf src/templates/* conf/
+          s=$(date +%s)
+          set +e
+          GATEWAY_TEST_MODE=dev pnpm test
+          code=$?
+          echo "TEST_SECS=$(( $(date +%s) - s ))" >> "$GITHUB_ENV"
+          echo "TEST_RESULT=$([ $code -eq 0 ] && echo pass || echo fail)" >> "$GITHUB_ENV"
+          exit $code
+
+      - name: Report timings
+        if: always()
+        run: |
+          total=$(( $(date +%s) - BENCH_START ))
+          line="BENCH runner=${{ matrix.runner }} cache=${{ matrix.cache }} cpus=$(nproc) install=${INSTALL_SECS:-NA}s build=${BUILD_SECS:-NA}s test=${TEST_SECS:-NA}s(${TEST_RESULT:-NA}) total=${total}s"
+          echo "$line"
+          {
+            echo "### ${{ matrix.runner }} / ${{ matrix.cache }}"
+            echo "| CPUs | Install | Build | Tests | Total |"
+            echo "|---|---|---|---|---|"
+            echo "| $(nproc) | ${INSTALL_SECS:-NA}s | ${BUILD_SECS:-NA}s | ${TEST_SECS:-NA}s (${TEST_RESULT:-NA}) | ${total}s |"
+          } >> "$GITHUB_STEP_SUMMARY"
