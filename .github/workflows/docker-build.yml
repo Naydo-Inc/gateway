@@ -1,0 +1,28 @@
+name: Docker build
+
+# A normal GitHub Actions Docker build, adapted from Hummingbot Gateway's
+# original workflow: login and push removed so it runs without any secrets.
+# Run this a few times on GitHub first (baseline), then let Blacksmith's
+# migration wizard convert it.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  docker:
+    name: Build Gateway image
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (no push)
+        uses:
